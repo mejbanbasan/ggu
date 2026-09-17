@@ -1,0 +1,126 @@
+:root {
+  --primary-maroon: #800000;
+  --primary-maroon-dark: #600000;
+  --secondary-bg: #fafafa;
+  --secondary-card: #ffffff;
+  --accent-gold: #d4af37;
+  --accent-gold-light: #f5b041;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --border-color: #f1f5f9;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.011em;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  background-color: var(--secondary-bg);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-slideUp {
+  animation: slideUp 0.3s ease-out forwards;
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee 30s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Markdown Table & Prose Styling for Chatbot */
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.75rem;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.prose th {
+  background-color: var(--primary-maroon);
+  color: #ffffff;
+  font-weight: 700;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--accent-gold);
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+}
+
+.prose td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  border-right: 1px solid #f1f5f9;
+  color: #1e293b;
+  font-size: 0.75rem;
+}
+
+.prose tr:nth-child(even) td {
+  background-color: #f8fafc;
+}
+
+.prose tr:hover td {
+  background-color: #f1f5f9;
+}
+
+.prose ul, .prose ol {
+  padding-left: 1.25rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose li {
+  margin-bottom: 0.25rem;
+}
+
+.prose strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  color: var(--primary-maroon);
+  font-weight: 800;
+  margin-top: 0.75rem;
+  margin-bottom: 0.4rem;
+}

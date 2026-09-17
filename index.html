@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gokul Global University | NAAC Grade A | Sidhpur, Gujarat</title>
+    <meta name="description" content="Gokul Global University (GGU), Sidhpur Gujarat - NAAC Grade A Accredited University offering B.Tech, Diploma, M.Tech programs with 15,000+ Placements, Drone Lab & AI Anchor Institute." />
+    <!-- Google Fonts: Plus Jakarta Sans, Playfair Display, Outfit, Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;0,700;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Tailwind CSS CDN Fallback for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['"Plus Jakarta Sans"', '"Inter"', 'sans-serif'],
+              serif: ['"Playfair Display"', 'Georgia', 'serif'],
+              display: ['"Outfit"', '"Plus Jakarta Sans"', 'sans-serif'],
+            },
+            colors: {
+              maroon: {
+                DEFAULT: '#800000',
+                dark: '#600000',
+                light: '#a00000',
+                soft: '#faf0f0'
+              },
+              gold: {
+                DEFAULT: '#d4af37',
+                light: '#f5b041',
+                dark: '#b38f24'
+              }
+            }
+          }
+        }
+      }
+    </script>
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
