@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, Bot, User, RefreshCw, Cpu } from 'lucide-react';
+import { X, Send, Bot, User, Loader2, Sparkles } from 'lucide-react';
 import { generateGeminiResponse } from '../services/geminiService';
 import { marked } from 'marked';
 
@@ -8,14 +8,11 @@ export default function ChatbotModal({ isOpen, onClose, initialQuery = '' }) {
     {
       id: 1,
       sender: 'bot',
-      text: "Hello! Namaste! Main Gokul Global University ke Engineering Department ka Student Counselor hu. Aap kaise hain? Aaj mai aapki kya sahayata kar sakta hu?",
-      keyUsed: 1,
-      modelUsed: "gemini-3.5-flash"
+      text: "Hello! Namaste! Main Gokul Global University ke Engineering Department ka Student Counselor hu. Aap kaise hain? Aaj mai aapki kya sahayata kar sakta hu?"
     }
   ]);
   const [inputQuery, setInputQuery] = useState('');
   const [loading, setLoading] = useState(false);
-  const [activeEngineInfo, setActiveEngineInfo] = useState({ key: 1, model: "gemini-3.5-flash" });
   
   const chatEndRef = useRef(null);
 
@@ -45,12 +42,9 @@ export default function ChatbotModal({ isOpen, onClose, initialQuery = '' }) {
       const botMsg = {
         id: Date.now() + 1,
         sender: 'bot',
-        text: response.text,
-        keyUsed: response.keyUsed,
-        modelUsed: response.modelUsed
+        text: response.text
       };
       setMessages(prev => [...prev, botMsg]);
-      setActiveEngineInfo({ key: response.keyUsed, model: response.modelUsed });
     } catch (err) {
       setMessages(prev => [
         ...prev,
@@ -66,106 +60,114 @@ export default function ChatbotModal({ isOpen, onClose, initialQuery = '' }) {
   };
 
   return (
-    <div className="fixed bottom-20 right-3 sm:right-6 z-50 w-[96vw] sm:w-[540px] md:w-[600px] h-[660px] max-h-[86vh] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-300 animate-slideUp transition-all duration-300">
+    <div className="fixed inset-0 sm:inset-auto sm:bottom-4 sm:right-4 z-50 w-full sm:w-[420px] md:w-[460px] h-full sm:h-[620px] sm:max-h-[88vh] flex flex-col overflow-hidden sm:rounded-2xl shadow-2xl animate-slideUp transition-all duration-300"
+      style={{
+        background: '#ffffff',
+        border: '1px solid #e2e8f0',
+      }}
+    >
       
-      {/* Header (GGU Maroon #800000) */}
-      <div className="bg-[#800000] p-4 px-6 text-white flex items-center justify-between border-b border-[#600000] shrink-0">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-[#800000] to-[#5a0000] p-4 px-5 text-white flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-[#f5b041] flex items-center justify-center text-[#800000] shadow-sm">
-            <Bot className="w-5 h-5" />
+          <div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-sm flex items-center justify-center border border-white/10">
+            <Bot className="w-5 h-5 text-amber-300" />
           </div>
           <div>
-            <h3 className="font-extrabold text-base flex items-center gap-2 text-white">
-              GGU Engineering Counselor
-              <span className="bg-[#f5b041] text-[#800000] text-[10px] px-2 py-0.5 rounded font-bold">
-                ONLINE
+            <h3 className="font-bold text-sm flex items-center gap-2 text-white">
+              Engineering Counselor
+              <span className="bg-green-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-bold flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                LIVE
               </span>
             </h3>
-            <p className="text-xs text-red-100 flex items-center gap-1 mt-0.5">
-              <Cpu className="w-3 h-3 text-[#f5b041]" />
-              <span>Counselor Engine: Active</span>
+            <p className="text-[11px] text-red-200/70 font-medium mt-0.5">
+              Gokul Global University
             </p>
           </div>
         </div>
 
         <button
           onClick={onClose}
-          className="p-1.5 rounded-lg text-red-100 hover:text-white hover:bg-white/10 transition"
-          title="Close Counselor"
+          className="w-8 h-8 rounded-lg flex items-center justify-center text-red-200 hover:text-white hover:bg-white/10 transition"
+          title="Close"
         >
-          <X className="w-5 h-5" />
+          <X className="w-4.5 h-4.5" />
         </button>
       </div>
 
-      {/* Chat Messages Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#f8fafc] text-xs sm:text-sm">
+      {/* Chat Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
         {messages.map((msg) => (
           <div
             key={msg.id}
-            className={`flex gap-3 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex gap-2.5 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'} animate-slideUp`}
           >
             {msg.sender === 'bot' && (
-              <div className="w-8 h-8 rounded-lg bg-[#800000] text-white flex items-center justify-center shrink-0 mt-0.5">
-                <Bot className="w-4 h-4 text-[#f5b041]" />
+              <div className="w-7 h-7 rounded-lg bg-[#800000] flex items-center justify-center shrink-0 mt-1">
+                <Bot className="w-3.5 h-3.5 text-amber-300" />
               </div>
             )}
 
             <div
-              className={`max-w-[94%] rounded-xl p-4 text-xs sm:text-sm leading-relaxed overflow-hidden ${
+              className={`max-w-[85%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed ${
                 msg.sender === 'user'
-                  ? 'bg-[#800000] text-white font-medium rounded-tr-none shadow-sm'
-                  : 'bg-white text-[#800000] border border-slate-200 shadow-sm rounded-tl-none prose prose-xs sm:prose-sm max-w-none w-full'
+                  ? 'bg-[#800000] text-white rounded-br-md shadow-sm'
+                  : 'bg-white text-slate-800 rounded-bl-md shadow-sm border border-slate-100 prose prose-sm max-w-none'
               }`}
             >
               {msg.sender === 'bot' ? (
                 <div
                   dangerouslySetInnerHTML={{ __html: marked.parse(msg.text || '') }}
-                  className="space-y-2"
+                  className="space-y-1.5 [&>p]:mb-2 [&>ul]:my-1 [&>ol]:my-1"
                 />
               ) : (
-                <p>{msg.text}</p>
+                <p className="m-0">{msg.text}</p>
               )}
             </div>
 
             {msg.sender === 'user' && (
-              <div className="w-8 h-8 rounded-lg bg-slate-700 text-white flex items-center justify-center shrink-0 mt-0.5">
-                <User className="w-4 h-4" />
+              <div className="w-7 h-7 rounded-lg bg-slate-700 flex items-center justify-center shrink-0 mt-1">
+                <User className="w-3.5 h-3.5 text-white" />
               </div>
             )}
           </div>
         ))}
 
         {loading && (
-          <div className="flex gap-3 items-center text-slate-500 text-xs sm:text-sm">
-            <div className="w-8 h-8 rounded-lg bg-[#800000] text-white flex items-center justify-center shrink-0">
-              <Bot className="w-4 h-4 text-[#f5b041]" />
+          <div className="flex gap-2.5 items-start animate-slideUp">
+            <div className="w-7 h-7 rounded-lg bg-[#800000] flex items-center justify-center shrink-0">
+              <Bot className="w-3.5 h-3.5 text-amber-300" />
             </div>
-            <div className="bg-white border border-slate-200 px-4 py-3 rounded-xl rounded-tl-none shadow-sm flex items-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin text-[#800000]" />
-              <span>Counselor is typing...</span>
+            <div className="bg-white border border-slate-100 px-4 py-3 rounded-2xl rounded-bl-md shadow-sm">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 bg-[#800000] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-2 h-2 bg-[#800000] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-2 h-2 bg-[#800000] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
             </div>
           </div>
         )}
         <div ref={chatEndRef} />
       </div>
 
-      {/* Input Bar */}
-      <div className="p-3.5 bg-white border-t border-slate-200 flex items-center gap-3 shrink-0">
+      {/* Input */}
+      <div className="p-3 bg-white border-t border-slate-100 flex items-center gap-2.5 shrink-0">
         <input
           type="text"
           value={inputQuery}
           onChange={(e) => setInputQuery(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder="Ask engineering counselor a question..."
-          className="flex-1 bg-[#f8fafc] border border-slate-300 rounded-xl px-4 py-2.5 text-xs sm:text-sm text-[#800000] focus:outline-none focus:ring-2 focus:ring-[#800000]"
+          placeholder="Ask about courses, fees, admissions..."
+          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#800000]/20 focus:border-[#800000]/40 transition-all"
         />
 
         <button
           onClick={() => handleSend()}
           disabled={loading || !inputQuery.trim()}
-          className="p-2.5 bg-[#800000] hover:bg-[#600000] disabled:opacity-50 text-white rounded-xl transition shadow-sm"
+          className="w-10 h-10 bg-[#800000] hover:bg-[#600000] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl transition-all shadow-sm flex items-center justify-center shrink-0"
         >
-          <Send className="w-4 h-4 text-[#f5b041]" />
+          <Send className="w-4 h-4" />
         </button>
       </div>
 

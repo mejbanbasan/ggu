@@ -1,4 +1,5 @@
 import { RAW_CURRICULUM_TEXT, RAW_PROGRAM_DETAILS_TEXT } from '../data/rawKnowledgeBase';
+import { queryLocalKnowledge } from './localKnowledgeEngine.js';
 
 const GEMINI_API_KEYS = [
   import.meta.env.VITE_GEMINI_API_KEY_1,
@@ -10,27 +11,33 @@ const GEMINI_API_KEYS = [
 ].filter(Boolean);
 
 const GEMINI_MODELS = [
-  "gemini-3.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
   "gemini-2.5-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-flash-lite-latest",
-  "gemini-3.1-flash-lite"
+  "gemini-3.5-flash",
+  "gemini-flash-lite-latest"
 ];
 
 let activeKeyIndex = 0;
 let activeModelIndex = 0;
 
 /**
- * Checks if a query is a short casual greeting
+ * Checks if a query is ONLY a short casual greeting without any question
  */
 function isSimpleGreeting(query) {
-  const clean = query.trim().toLowerCase().replace(/[^\w\s]/gi, '');
-  const greetings = [
-    'hi', 'hello', 'hey', 'hie', 'hy', 'namaste', 'namaskar', 'good morning', 
-    'good afternoon', 'good evening', 'kaise ho', 'how are you', 'kem cho',
-    'halo', 'jay shree krishna', 'jai shree krishna', 'assalam walaikum'
+  const clean = query.trim().toLowerCase().replace(/[^\w\s]/gi, '').trim();
+  const exactGreetings = [
+    'hi', 'hello', 'hey', 'hie', 'hy', 'namaste', 'namaskar', 
+    'good morning', 'good afternoon', 'good evening', 'kaise ho', 
+    'how are you', 'kem cho', 'halo', 'jay shree krishna', 'jai shree krishna', 'pranam'
   ];
-  return greetings.includes(clean) || (clean.length <= 8 && greetings.some(g => clean.startsWith(g)));
+  // Must be an exact greeting and NOT contain question or course keywords
+  if (exactGreetings.includes(clean)) return true;
+  
+  const hasContentWord = /\b(btech|b-tech|diploma|admission|course|fee|fees|syllabus|subject|sem|semester|eligibility|placement|dean|college|university|kya|kaise|kitna|batao|chahiye)\b/i;
+  if (hasContentWord.test(query)) return false;
+
+  return false;
 }
 
 /**
@@ -52,9 +59,64 @@ function isFarewell(query) {
 }
 
 /**
- * Builds full system instruction according to exact user prompt specification
+ * Dedicated prompt for Voice Calling Mode - sounds like a real human admissions counselor on a phone call
+ */
+function buildVoicePhoneCounselorPrompt() {
+  return `You are a real, warm, and helpful human Admissions Counselor at Hansaba College of Engineering & Technology (HCET), Gokul Global University (GGU), Sidhpur, Gujarat.
+You are currently on a LIVE PHONE CALL with a student or parent.
+
+CALL CONVERSATION GUIDELINES (CRITICAL):
+1. TALK LIKE A REAL HUMAN COUNSELOR ON THE PHONE:
+   - Speak naturally, warmly, and respectfully (e.g. "Namaste! Haan ji...", "Bilkul, main aapko bata deta hoon...", "Aap bilkul chinta mat kijiye...").
+   - NEVER sound robotic. NEVER say "As an AI", "I am a virtual assistant", or give formal essays.
+   - NEVER use any markdown, bullet points, numbers, asterisks (**), or special symbols. Only speak clean, natural conversational sentences that sound pleasant to hear.
+   - NEVER use "[DISPLAY]" or any screen markers. Everything you say will be heard directly by the caller.
+
+2. ACCURATE KNOWLEDGE BASE USAGE (CRITICAL):
+   - Always pull exact information, subjects, eligibility, and program facts directly from the attached knowledge base below (program_details_llms.txt and curriculum_llms.txt).
+   - If a caller asks about subjects or syllabus for any program or semester (e.g., "Diploma Computer Sem 1 ke subjects batao" or "B.Tech Civil ka syllabus"), state the exact course names from the curriculum table in conversational spoken sentences (e.g., "Computer Diploma Semester 1 mein Mathematics-I, Communication Skills, Applied Physics-I, Applied Chemistry aur Engineering Graphics jaise core subjects sikhaye jaate hain.").
+   - If asked about eligibility, fees, or course duration, quote the exact details from program_details_llms.txt.
+   - Keep answers to 2 to 3 natural, fluid spoken sentences (do not read course codes or credit numbers over the phone, just clear subject names).
+   - Always end with a polite, friendly question to keep the conversation going naturally (e.g., "Aapko kisi aur semester ya admission process ke baare mein jaanna hai?").
+
+3. LANGUAGE MATCHING:
+   - If caller speaks Hindi or Hinglish -> Reply in natural conversational Hindi/Hinglish.
+   - If caller speaks English -> Reply in warm, clear English.
+   - If caller speaks Gujarati -> Reply in polite Gujarati.
+
+4. GGU KNOWLEDGE BASE FACTS:
+   - University: Gokul Global University (GGU), Sidhpur, Gujarat (NAAC Grade A Accredited).
+   - Constituent Colleges: Hansaba College of Engineering & Technology (HCET) and Hansaba Institute of Technology (HIT).
+   - Dean: Dr. Dilipkumar S. Patel.
+   - Programs:
+     * Diploma (3 Years): Computer, ICT, Mechanical, Civil, Electrical, Automobile. (Eligibility: 10th pass with min 35%).
+     * B.Tech (4 Years): Computer Science, Artificial Intelligence (AI), Cyber Security, ICT, Information Technology, Civil, Mechanical, Electrical. (Eligibility: 12th Science PCM with 45% + GUJCET/JEE).
+     * M.Tech (2 Years): Cloud Computing, Data Science, Environmental, Structural, Transportation, Thermal, Computer, Electrical.
+     * Ph.D. in Engineering.
+   - Placements: 15,000+ placements, 1000+ top recruiting companies, highest milestone 25+ LPA.
+   - Facilities: Drone Aero Vision Lab (AVPL), Robotics & AI Anchor Institute, modern labs, boys & girls hostel, bus transportation across North Gujarat.
+   - Fees: Diploma approx 40,000 to 45,000 per year, B.Tech approx 65,000 to 75,000 per year. MYSY and government scholarships available.
+   - Non-engineering queries: Politely explain that you are the engineering admissions counselor and can help with Diploma, B.Tech, or M.Tech admissions.
+
+====================================================================
+FULL KNOWLEDGE BASE DATA: PROGRAM DETAILS (program_details_llms.txt):
+====================================================================
+${RAW_PROGRAM_DETAILS_TEXT}
+
+====================================================================
+FULL KNOWLEDGE BASE DATA: CURRICULUM & SYLLABUS (curriculum_llms.txt):
+====================================================================
+${RAW_CURRICULUM_TEXT}
+`;
+}
+
+/**
+ * Builds full system instruction according to exact user prompt specification for text chat
  */
 function buildFullSystemInstruction(isVoiceMode) {
+  if (isVoiceMode) {
+    return buildVoicePhoneCounselorPrompt();
+  }
   return `You are a Student Counselor at the Faculty of Engineering and Technology, Gokul Global University (GGU), Siddhpur, Gujarat. You talk to students and parents the way a real human counselor would in a face-to-face conversation. You are not a robot. You are a helpful, knowledgeable person who genuinely cares about helping students make the right academic decisions.
 
 YOUR IDENTITY:
@@ -79,41 +141,6 @@ HOW TO TALK:
   - If user writes/speaks in Gujarati -> Reply fully in Gujarati
   - NEVER mix languages unless the user does. If user speaks pure Hindi, do not add English words unnecessarily.
   - This rule applies to EVERY single response without exception.
-${isVoiceMode ? `- VOICE MODE FORMAT (MOST CRITICAL RULE):
-  - Your response MUST follow this format when giving ANY detailed information (syllabus, fees, eligibility, program details, subjects list, etc.):
-  
-  FORMAT:
-  [Short 1-2 line spoken sentence that counselor will SAY OUT LOUD]
-  [DISPLAY]
-  [Full detailed information that will be SHOWN on screen - NOT spoken]
-  
-  EXAMPLES:
-  - User asks "Computer Diploma Sem 1 ka syllabus batao":
-    "Bilkul! Main aapko Computer Diploma Semester 1 ka pura syllabus dikha raha hu, screen pe dekh lijiye."
-    [DISPLAY]
-    Diploma in Computer Engineering - Semester 1 Subjects:
-    1. Mathematics-I (Credits: 4)
-    2. Communication Skills (Credits: 2)
-    3. Applied Physics-I (Credits: 4)
-    ... (all subjects)
-  
-  - User asks "B.Tech AI ki eligibility kya hai?":
-    "B.Tech AI ki eligibility bata raha hu, screen pe details dekh lijiye."
-    [DISPLAY]
-    B.Tech CSE (Artificial Intelligence) Eligibility:
-    - 12th Science (PCM) with minimum 45% marks
-    - Valid GUJCET / JEE Main score
-    ...
-  
-  RULES:
-  - The spoken part (before [DISPLAY]) should be SHORT, natural, and conversational (max 1-2 sentences).
-  - NEVER read out long lists, subject names, credit tables, or detailed data in the spoken part.
-  - Just tell the user naturally: "Screen pe dikha diya hai" or "Details screen pe dekh lo"
-  - The display part (after [DISPLAY]) should have COMPLETE detailed information with proper formatting.
-  - Use plain numbered lists in the display part. Do NOT use markdown tables (| column |), asterisks (**bold**), or hash headings (###).
-  - If the response is very short (greetings, simple yes/no answers, thank you), do NOT use [DISPLAY] marker. Just give the spoken text directly.
-  - Match the user's language. Hindi/Hinglish user ko Hindi/Hinglish me reply karo.
-  - Give the SAME quality and completeness of information as chatbot text mode.` : ''}
 
 CONVERSATION STYLE (MOST IMPORTANT):
 You must have a back-and-forth conversation like two humans talking face to face. This means:
@@ -176,7 +203,7 @@ You must have a back-and-forth conversation like two humans talking face to face
    M.Tech Programs (2 years): Cloud Computing, Data Science and Analytics, Environmental Engineering, Transportation Engineering, Structural Engineering, Thermal Engineering, Computer Engineering, Electrical Engineering
 
 8. ABOUT THE FACULTY:
-   - Dean: Dr. Vipulkumar Dabhi
+   - Dean: Dr. Dilipkumar S. Patel
    - Constituent Colleges: Hansaba College of Engineering and Technology (HCET), Hansaba Institute of Technology (HIT)
    - Vision: To be a world class technical institution with significant international impact and strong local commitment.
    - Key Features: Industry-Integrated Curriculum, Innovation and Research Ecosystem, Experienced Faculty and Mentorship, Modern Infrastructure
@@ -202,7 +229,7 @@ ${RAW_CURRICULUM_TEXT}
 }
 
 /**
- * Executes prompt with 0.1s instant failover across 6 API keys & 5 models
+ * Executes prompt with instant failover across API keys & models
  */
 export async function generateGeminiResponse(userQuery, chatHistory = [], isVoiceMode = false) {
   // 1. Direct natural human response for Simple Greetings ("hi", "hello", "namaste")
@@ -211,7 +238,7 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
     if (isHinglishOrHindi) {
       return {
         text: isVoiceMode 
-          ? "Namaste! Main Gokul Global University Engineering Department ka Counselor hu. Kaise hain aap? Aaj main aapki kya help kar sakta hu?"
+          ? "Namaste! Gokul Global University Admissions Helpline mein aapka swagat hai. Main aapki kya madad kar sakta hoon?"
           : "Hello! Namaste! Kaise hain aap? Aaj main aapki kya help kar sakta hu?",
         keyUsed: 1,
         modelUsed: "gemini-3.5-flash"
@@ -219,7 +246,7 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
     }
     return {
       text: isVoiceMode
-        ? "Hello! Namaste! Welcome to Gokul Global University. How can I help you today?"
+        ? "Hello! Namaste! Welcome to Gokul Global University Admissions Helpline. How can I help you today?"
         : "Hello! Namaste! How are you doing today? How can I help you regarding our engineering courses or admissions?",
       keyUsed: 1,
       modelUsed: "gemini-3.5-flash"
@@ -232,7 +259,7 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
     if (isHinglishOrHindi) {
       return {
         text: isVoiceMode
-          ? "Aapka swagat hai! Khushi hui aapki madad karke. All the best!"
+          ? "Aapka bahut-bahut swagat hai! Khushi hui aapse baat karke. Agar aur koi sawaal ho to zaroor poochiye. All the best!"
           : "Aapka swagat hai! Khushi hui aapki madad karke. Agar courses ya admissions ke baare me koi bhi aur sawaal ho, to bejhijhak poochiye. All the best!",
         keyUsed: 1,
         modelUsed: "gemini-3.5-flash"
@@ -240,7 +267,7 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
     }
     return {
       text: isVoiceMode
-        ? "You're most welcome! Glad I could help. All the best!"
+        ? "You're most welcome! Glad I could help you today. Feel free to call again if you have more questions. All the best!"
         : "You're most welcome! I'm glad I could help. If you have any more questions about courses or admissions, feel free to ask anytime. Wishing you all the best!",
       keyUsed: 1,
       modelUsed: "gemini-3.5-flash"
@@ -251,7 +278,7 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
   if (isFarewell(userQuery)) {
     return {
       text: isVoiceMode
-        ? "Goodbye! Have a wonderful day ahead and all the best!"
+        ? "Dhanyawad! Have a great day and all the best aapke future admissions ke liye!"
         : "Goodbye! Have a great day ahead and all the very best for your future!",
       keyUsed: 1,
       modelUsed: "gemini-3.5-flash"
@@ -263,8 +290,9 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
   // Build message sequence
   const contents = [];
   
-  // Format past history
-  chatHistory.slice(-6).forEach(msg => {
+  // Format past history (keep last 4 for faster voice inference)
+  const historyLimit = isVoiceMode ? -4 : -6;
+  chatHistory.slice(historyLimit).forEach(msg => {
     contents.push({
       role: msg.sender === 'user' ? 'user' : 'model',
       parts: [{ text: msg.text }]
@@ -282,12 +310,22 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
     },
     contents: contents,
     generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: isVoiceMode ? 1000 : 1200,
+      temperature: isVoiceMode ? 0.45 : 0.3,
+      maxOutputTokens: isVoiceMode ? 220 : 1200,
     }
   };
 
-  const totalKeys = GEMINI_API_KEYS.length;
+  const validKeys = GEMINI_API_KEYS.filter(k => k && k.startsWith('AIzaSy'));
+  if (validKeys.length === 0) {
+    const fallbackText = queryLocalKnowledge(userQuery, isVoiceMode, 'hi');
+    return {
+      text: fallbackText.replace(/b\s*\.\s*tech/gi, 'B-Tech').replace(/m\s*\.\s*tech/gi, 'M-Tech'),
+      keyUsed: "Curriculum & Program Knowledge Base",
+      modelUsed: "Instant-GGU-Engine"
+    };
+  }
+
+  const totalKeys = validKeys.length;
   const totalModels = GEMINI_MODELS.length;
   let attempts = 0;
   const maxAttempts = totalKeys * totalModels;
@@ -298,7 +336,8 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const timeoutMs = isVoiceMode ? 2800 : 6000;
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${currentKey}`;
       
@@ -338,35 +377,10 @@ export async function generateGeminiResponse(userQuery, chatHistory = [], isVoic
   }
 
   // Fallback intelligent response generator if network fails
+  const fallbackText = queryLocalKnowledge(userQuery, isVoiceMode);
   return {
-    text: getOfflineFallbackResponse(userQuery, isVoiceMode),
-    keyUsed: "Local Knowledge Base",
+    text: fallbackText.replace(/b\s*\.\s*tech/gi, 'B-Tech').replace(/m\s*\.\s*tech/gi, 'M-Tech'),
+    keyUsed: "Curriculum & Program Knowledge Base",
     modelUsed: "Offline-GGU-Engine"
   };
-}
-
-function getOfflineFallbackResponse(query, isVoiceMode) {
-  const q = query.toLowerCase();
-
-  if (q.includes('syllabus') || q.includes('curriculum') || q.includes('subject')) {
-    if (q.includes('diploma')) {
-      if (isVoiceMode) {
-        return "We offer Diploma programs in ICT, Electrical, Civil, Mechanical, Computer, and Automobile Engineering. Which branch and semester syllabus would you like?";
-      }
-      return `### Diploma Engineering Programs (Gokul Global University)\n\nWe offer **3-Year Diploma Programs** in:\n1. Computer Engineering\n2. ICT Engineering\n3. Electrical Engineering\n4. Civil Engineering\n5. Mechanical Engineering\n6. Automobile Engineering\n\n*Aapko kis branch aur semester ka syllabus chahiye?*`;
-    }
-
-    if (q.includes('btech') || q.includes('b.tech') || q.includes('be')) {
-      if (isVoiceMode) {
-        return "We offer B.Tech degrees in Computer, Artificial Intelligence, Cyber Security, ICT, Electrical, Civil, and Mechanical Engineering. Which branch syllabus would you like?";
-      }
-      return `### B.Tech Programs (Gokul Global University)\n\nWe offer 4-Year B.Tech degrees in:\n* Computer Engineering\n* CSE (Artificial Intelligence)\n* CSE (Cyber Security)\n* ICT\n* Electrical Engineering\n* Civil Engineering\n* Mechanical Engineering\n\n*Aapko kis branch aur semester ka syllabus chahiye?*`;
-    }
-  }
-
-  if (isVoiceMode) {
-    return "Hello! I am your Student Counselor at Gokul Global University Engineering Department. How can I help you today?";
-  }
-
-  return `Hello! I am the Student Counselor for the **Faculty of Engineering & Technology at Gokul Global University**.\n\nHow can I help you regarding our Diploma, B.Tech, or M.Tech engineering programs today?`;
 }

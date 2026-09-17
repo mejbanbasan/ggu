@@ -1,563 +1,764 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Mic, MicOff, VolumeX, Radio, User, Bot, FileText, ChevronDown } from 'lucide-react';
+import { PhoneOff, Mic, MicOff, Volume2, VolumeX, Shield } from 'lucide-react';
 import { generateGeminiResponse } from '../services/geminiService';
+import { queryLocalKnowledge, getWelcomeGreeting } from '../services/localKnowledgeEngine.js';
 
 export default function VoicebotModal({ isOpen, onClose }) {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
-  const [autoMode, setAutoMode] = useState(true);
-  const [isBlinking, setIsBlinking] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [aiResponseText, setAiResponseText] = useState('');
-  const [history, setHistory] = useState([]);
-  const [detectedLang, setDetectedLang] = useState('hi-IN');
-  const [detailContent, setDetailContent] = useState('');
-  const [showDetailPopup, setShowDetailPopup] = useState(false);
+  const [isCallConnected, setIsCallConnected] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  const [callSeconds, setCallSeconds] = useState(0);
 
   const recognitionRef = useRef(null);
   const synthRef = useRef(window.speechSynthesis);
   const finalTranscriptRef = useRef('');
   const isProcessingRef = useRef(false);
-  const voicesLoadedRef = useRef(false);
-  const autoModeRef = useRef(true);
+  const isSpeakingRef = useRef(false);
+  const isListeningRef = useRef(false);
   const mountedRef = useRef(true);
+  const isMutedRef = useRef(false);
+  const isSpeakerMutedRef = useRef(false);
+  const isCallTerminatedRef = useRef(false);
+  const debounceSpeechTimerRef = useRef(null);
+  const historyRef = useRef([]);
+  const lastQueryRef = useRef({ text: '', timestamp: 0 });
 
-  // Keep autoModeRef in sync
-  useEffect(() => { autoModeRef.current = autoMode; }, [autoMode]);
+  useEffect(() => { isMutedRef.current = isMuted; }, [isMuted]);
+  useEffect(() => { isSpeakerMutedRef.current = isSpeakerMuted; }, [isSpeakerMuted]);
+  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
-  // Track mount state
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  // Eye blink animation
-  useEffect(() => {
-    const id = setInterval(() => {
-      setIsBlinking(true);
-      setTimeout(() => setIsBlinking(false), 200);
-    }, 3500);
-    return () => clearInterval(id);
-  }, []);
-
-  // Preload voices (Chrome loads them async)
-  useEffect(() => {
-    const loadVoices = () => {
-      const v = speechSynthesis.getVoices();
-      if (v.length > 0) voicesLoadedRef.current = true;
+    return () => { 
+      mountedRef.current = false;
+      isCallTerminatedRef.current = true;
     };
-    loadVoices();
-    speechSynthesis.addEventListener('voiceschanged', loadVoices);
-    return () => speechSynthesis.removeEventListener('voiceschanged', loadVoices);
   }, []);
 
-  // Detect language from text
-  const detectLanguage = useCallback((text) => {
-    if (!text) return 'hi-IN';
-    // Devanagari script = Hindi
-    if (/[\u0900-\u097F]/.test(text)) return 'hi-IN';
-    // Gujarati script
-    if (/[\u0A80-\u0AFF]/.test(text)) return 'gu-IN';
-    // Hinglish detection (common Hindi words in Latin script)
-    const hinglishWords = /\b(kya|kaise|kahan|kaun|kitna|batao|chahiye|karo|bolo|haan|nahi|accha|theek|acha|padhai|fees|hai|ho|hu|hain|mein|mujhe|kuch|aur|abhi|sab|yeh|woh|bhai|sir|madam|ji|admission|course|semester|branch|engineering)\b/i;
-    if (hinglishWords.test(text)) return 'hi-IN';
-    // Default English
-    return 'en-IN';
+  // Call timer
+  useEffect(() => {
+    if (!isOpen) {
+      setCallSeconds(0);
+      setIsCallConnected(false);
+      return;
+    }
+    const timer = setInterval(() => {
+      setCallSeconds(s => s + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isOpen]);
+
+  const formatCallDuration = (secs) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  // Soft call connection chime
+  const playConnectChime = useCallback(() => {
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    } catch (e) {
+      // AudioContext blocked or unsupported
+    }
   }, []);
 
-  // Get best TTS voice for a language
-  const getBestVoice = useCallback((lang) => {
+  // Smart natural voice selector prioritizing neural & Indian voices
+  const getBestHumanVoice = useCallback((lang = 'hi-IN') => {
     const voices = speechSynthesis.getVoices();
-    if (!voices.length) return null;
+    if (!voices || voices.length === 0) return null;
 
-    const langPrefix = lang.split('-')[0]; // 'hi', 'en', 'gu'
-
-    // Priority: Google voices > Microsoft voices > any matching voice
-    const googleVoice = voices.find(v =>
-      v.lang.startsWith(langPrefix) && v.name.toLowerCase().includes('google')
+    // Natural Hindi / Indian voices
+    const naturalHindi = voices.find(v => 
+      (v.lang.toLowerCase().startsWith('hi')) && 
+      (v.name.includes('Natural') || v.name.includes('Online') || v.name.includes('Swara') || v.name.includes('Madhur') || v.name.includes('Google'))
     );
-    if (googleVoice) return googleVoice;
+    if (naturalHindi) return naturalHindi;
 
-    const microsoftVoice = voices.find(v =>
-      v.lang.startsWith(langPrefix) && v.name.toLowerCase().includes('microsoft')
-    );
-    if (microsoftVoice) return microsoftVoice;
+    const anyHindi = voices.find(v => v.lang.toLowerCase().startsWith('hi'));
+    if (anyHindi) return anyHindi;
 
-    const anyMatch = voices.find(v => v.lang.startsWith(langPrefix));
-    if (anyMatch) return anyMatch;
-
-    // Fallback: Hindi > English-IN > first voice
-    const hindiVoice = voices.find(v => v.lang.startsWith('hi'));
-    if (hindiVoice) return hindiVoice;
-
-    const enInVoice = voices.find(v => v.lang === 'en-IN');
-    if (enInVoice) return enInVoice;
+    const indianVoice = voices.find(v => v.lang.toLowerCase().includes('in'));
+    if (indianVoice) return indianVoice;
 
     return voices[0];
   }, []);
 
-  // Speak response with proper voice matching
+  // Safe listener starter
+  const startListening = useCallback(() => {
+    if (isCallTerminatedRef.current || isMutedRef.current || isSpeakingRef.current || isListeningRef.current || !isOpen) return;
+
+    finalTranscriptRef.current = '';
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+      setTimeout(() => {
+        try {
+          if (!isCallTerminatedRef.current && !isSpeakingRef.current && !isMutedRef.current && mountedRef.current && isOpen) {
+            recognitionRef.current.lang = 'hi-IN';
+            recognitionRef.current.start();
+          }
+        } catch (err) {
+          // Ignore recognition collision
+        }
+      }, 40);
+    }
+  }, [isOpen]);
+
+  const stopListening = useCallback(() => {
+    try { recognitionRef.current?.stop(); } catch (e) {}
+    setIsListening(false);
+    isListeningRef.current = false;
+  }, []);
+
+  // Speech synthesis with human tone & cadence
   const speakResponse = useCallback((textToSpeak, lang = 'hi-IN') => {
-    if (!synthRef.current || !textToSpeak) return;
+    if (isCallTerminatedRef.current || !mountedRef.current || !synthRef.current || !textToSpeak || isSpeakerMutedRef.current) {
+      if (!isCallTerminatedRef.current && !isSpeakerMutedRef.current && mountedRef.current) {
+        setTimeout(() => startListening(), 400);
+      }
+      return;
+    }
 
-    synthRef.current.cancel();
+    // Stop recognition immediately while speaking to avoid hearing own echo
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+    }
+    setIsListening(false);
+    isListeningRef.current = false;
 
-    // Clean markdown/special chars for TTS
+    // Cancel previous speech immediately
+    try {
+      synthRef.current.cancel();
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+    } catch (e) {}
+
+    // Clean text completely: Fix B.Tech pronunciation so TTS does NOT pause between B and Tech
     const cleanText = textToSpeak
+      .replace(/b\s*\.\s*tech/gi, 'B-Tech')
+      .replace(/m\s*\.\s*tech/gi, 'M-Tech')
+      .replace(/ph\s*\.\s*d/gi, 'PhD')
+      .replace(/dr\s*\./gi, 'Doctor ')
+      .replace(/sem\s*\./gi, 'Semester ')
+      .replace(/no\s*\./gi, 'Number ')
+      .replace(/%/g, ' percent ')
+      .replace(/\+/g, ' plus ')
+      .replace(/&/g, ' and ')
+      .replace(/\[DISPLAY\][\s\S]*/gi, '')
+      .replace(/#{1,6}\s*/g, '')
+      .replace(/\*{1,3}/g, '')
+      .replace(/_{1,3}/g, '')
+      .replace(/`{1,3}/g, '')
       .replace(/\|/g, ', ')
-      .replace(/[#*_`~\[\]]/g, '')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
       .replace(/[-]{2,}/g, ' ')
       .replace(/\n+/g, '. ')
       .replace(/\s+/g, ' ')
+      .replace(/[~\[\]]/g, '')
       .trim();
 
-    if (!cleanText) return;
-
-    // Split long text into chunks (Chrome has a bug with utterances > ~300 chars)
-    const maxLen = 250;
-    const sentences = cleanText.match(/[^.!?]+[.!?]*/g) || [cleanText];
-    const chunks = [];
-    let current = '';
-
-    for (const sentence of sentences) {
-      if ((current + sentence).length > maxLen && current) {
-        chunks.push(current.trim());
-        current = sentence;
-      } else {
-        current += sentence;
-      }
+    if (!cleanText || isCallTerminatedRef.current) {
+      if (mountedRef.current && !isCallTerminatedRef.current) setTimeout(() => startListening(), 400);
+      return;
     }
-    if (current.trim()) chunks.push(current.trim());
 
-    const voice = getBestVoice(lang);
+    const sentences = cleanText.match(/[^.!?]+[.!?]*/g) || [cleanText];
+    const voice = getBestHumanVoice(lang);
+    let index = 0;
 
-    let chunkIndex = 0;
-
-    const speakChunk = () => {
-      if (chunkIndex >= chunks.length || !mountedRef.current) {
+    const speakNextSentence = () => {
+      if (isCallTerminatedRef.current || !mountedRef.current) {
         setIsSpeaking(false);
-        // Auto-listen after speaking finishes
-        if (autoModeRef.current && mountedRef.current) {
+        isSpeakingRef.current = false;
+        return;
+      }
+
+      if (index >= sentences.length) {
+        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+
+        // Automatically open mic to listen to user's reply, just like a phone call!
+        // 400ms buffer so mic doesn't catch the tail end of speaker audio
+        if (mountedRef.current && !isCallTerminatedRef.current && !isMutedRef.current) {
           setTimeout(() => {
-            if (mountedRef.current && !isProcessingRef.current) {
+            if (mountedRef.current && !isCallTerminatedRef.current && !isProcessingRef.current && !isSpeakingRef.current) {
               startListening();
             }
-          }, 700);
+          }, 400);
         }
         return;
       }
 
-      const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex]);
-      if (voice) utterance.voice = voice;
-      utterance.lang = lang;
-      utterance.rate = 0.95;
-      utterance.pitch = 1.05;
-
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => {
-        chunkIndex++;
-        speakChunk();
-      };
-      utterance.onerror = (e) => {
-        console.warn('TTS error:', e.error);
-        setIsSpeaking(false);
-      };
-
-      synthRef.current.speak(utterance);
-    };
-
-    speakChunk();
-  }, [getBestVoice]);
-
-  // Parse [DISPLAY] delimiter from AI response
-  const parseVoiceResponse = useCallback((fullText) => {
-    const marker = '[DISPLAY]';
-    const idx = fullText.indexOf(marker);
-    if (idx !== -1) {
-      const spokenPart = fullText.substring(0, idx).trim();
-      const displayPart = fullText.substring(idx + marker.length).trim();
-      return { spoken: spokenPart, detail: displayPart };
-    }
-    // No marker = simple response, speak everything
-    return { spoken: fullText.trim(), detail: '' };
-  }, []);
-
-  // Handle voice query -> send to Gemini -> speak response
-  const handleVoiceQuery = useCallback(async (queryText) => {
-    if (!queryText.trim() || isProcessingRef.current) return;
-
-    isProcessingRef.current = true;
-    setIsThinking(true);
-    setAiResponseText('Soch raha hu...');
-    setDetailContent('');
-
-    // Detect language of user's speech
-    const lang = detectLanguage(queryText);
-    setDetectedLang(lang);
-
-    try {
-      const response = await generateGeminiResponse(queryText, history, true);
-      const botText = response.text;
-
-      if (!mountedRef.current) return;
-
-      // Parse: spoken part vs display-only part
-      const { spoken, detail } = parseVoiceResponse(botText);
-
-      setAiResponseText(spoken);
-      if (detail) {
-        setDetailContent(detail);
-        // Auto-open detail popup when there's detailed info
-        setShowDetailPopup(true);
+      const sentence = sentences[index].trim();
+      if (!sentence) {
+        index++;
+        speakNextSentence();
+        return;
       }
 
-      setHistory(prev => [
-        ...prev,
-        { sender: 'user', text: queryText },
-        { sender: 'bot', text: botText }
-      ]);
+      const utterance = new SpeechSynthesisUtterance(sentence);
+      if (voice) utterance.voice = voice;
+      utterance.lang = lang;
+      utterance.rate = 1.08; // Brisk and natural
+      utterance.pitch = 1.0;
+      utterance.volume = 1;
 
-      // Only speak the SHORT spoken part (not the detail)
-      const responseLang = detectLanguage(spoken);
-      speakResponse(spoken, responseLang || lang);
-    } catch (err) {
-      console.error('Gemini voice error:', err);
-      const fallback = lang === 'hi-IN'
-        ? "Main GGU Engineering ka Counselor hu. Aap engineering courses ya admissions ke baare me pooch sakte hain!"
-        : "I am the GGU Engineering Counselor. You can ask me about engineering courses or admissions!";
-      setAiResponseText(fallback);
-      speakResponse(fallback, lang);
-    } finally {
-      setIsThinking(false);
-      isProcessingRef.current = false;
-    }
-  }, [history, detectLanguage, speakResponse, parseVoiceResponse]);
+      utterance.onstart = () => {
+        if (isCallTerminatedRef.current) {
+          try { synthRef.current?.cancel(); } catch (e) {}
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          return;
+        }
+        setIsSpeaking(true);
+        isSpeakingRef.current = true;
+      };
 
-  // Create Speech Recognition (only once on mount)
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn('Speech Recognition not supported in this browser');
+      utterance.onend = () => {
+        if (isCallTerminatedRef.current || !mountedRef.current) {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          return;
+        }
+        index++;
+        if (synthRef.current?.paused) synthRef.current.resume();
+        speakNextSentence();
+      };
+
+      utterance.onerror = (e) => {
+        // Stop playback completely if cancelled, interrupted, or call terminated
+        if (isCallTerminatedRef.current || !mountedRef.current || e.error === 'canceled' || e.error === 'interrupted') {
+          setIsSpeaking(false);
+          isSpeakingRef.current = false;
+          return;
+        }
+        console.warn('SpeechSynthesis error:', e.error);
+        index++;
+        speakNextSentence();
+      };
+
+      try {
+        synthRef.current.speak(utterance);
+      } catch (e) {
+        setIsSpeaking(false);
+        isSpeakingRef.current = false;
+      }
+
+      // Workaround for Chrome TTS freeze
+      setTimeout(() => {
+        if (!isCallTerminatedRef.current && synthRef.current?.paused) synthRef.current.resume();
+      }, 200);
+    };
+
+    setIsSpeaking(true);
+    isSpeakingRef.current = true;
+    speakNextSentence();
+  }, [getBestHumanVoice, startListening]);
+
+  // Handle incoming voice query from user
+  const handleVoiceQuery = useCallback(async (queryText) => {
+    if (isCallTerminatedRef.current) return;
+    const cleanQuery = queryText.trim();
+    if (!cleanQuery || isProcessingRef.current) return;
+
+    // Prevent immediate duplicate query execution within 3.5 seconds
+    const now = Date.now();
+    if (
+      cleanQuery.toLowerCase() === lastQueryRef.current.text.toLowerCase() &&
+      now - lastQueryRef.current.timestamp < 3500
+    ) {
       return;
     }
+    lastQueryRef.current = { text: cleanQuery, timestamp: now };
+
+    isProcessingRef.current = true;
+    setIsSpeaking(true);
+    isSpeakingRef.current = true;
+
+    try {
+      const response = await generateGeminiResponse(cleanQuery, historyRef.current, true);
+      if (isCallTerminatedRef.current || !mountedRef.current) return;
+
+      let botReply = response.text;
+      if (!botReply || botReply.length < 5) {
+        botReply = queryLocalKnowledge(cleanQuery, true, 'hi');
+      }
+
+      if (isCallTerminatedRef.current || !mountedRef.current) return;
+
+      historyRef.current = [
+        ...historyRef.current.slice(-6),
+        { sender: 'user', text: cleanQuery },
+        { sender: 'bot', text: botReply }
+      ];
+
+      speakResponse(botReply, 'hi-IN');
+    } catch (err) {
+      if (isCallTerminatedRef.current || !mountedRef.current) return;
+      console.warn('Gemini query fallback to local knowledge:', err);
+      const localReply = queryLocalKnowledge(cleanQuery, true, 'hi');
+      speakResponse(localReply, 'hi-IN');
+    } finally {
+      isProcessingRef.current = false;
+    }
+  }, [speakResponse]);
+
+  // Setup Speech Recognition
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = true;
+    recognition.interimResults = true; // Enables instant final detection without delay
     recognition.maxAlternatives = 1;
-    // Use hi-IN as primary lang — it also recognizes English/Hinglish well
     recognition.lang = 'hi-IN';
 
     recognition.onstart = () => {
+      if (isCallTerminatedRef.current) {
+        try { recognition.abort(); } catch (e) {}
+        return;
+      }
       setIsListening(true);
-      setTranscript('Aapki awaaz sun raha hu...');
+      isListeningRef.current = true;
       finalTranscriptRef.current = '';
     };
 
     recognition.onresult = (event) => {
-      let interim = '';
-      let final = '';
+      if (isCallTerminatedRef.current) return;
+      let fullTranscript = '';
+      let isAnyFinal = false;
 
-      for (let i = 0; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          final += result[0].transcript;
-        } else {
-          interim += result[0].transcript;
+      for (let i = 0; i < event.results.length; ++i) {
+        if (event.results[i] && event.results[i][0]) {
+          fullTranscript += ' ' + event.results[i][0].transcript;
+          if (event.results[i].isFinal) isAnyFinal = true;
         }
       }
 
-      // Store final transcript in ref (avoids stale closure)
-      if (final) {
-        finalTranscriptRef.current = final;
-        setTranscript(final);
-      } else if (interim) {
-        setTranscript(interim);
+      const trimmed = fullTranscript.trim();
+      if (trimmed) {
+        finalTranscriptRef.current = trimmed;
+      }
+
+      // If user pauses naturally at end of speech, trigger after 450ms buffer
+      // This prevents cutting off sentences like "mere ko BTech AI... [brief pause] ...ke andar admission lena hai"
+      if (isAnyFinal && trimmed.length >= 3) {
+        if (debounceSpeechTimerRef.current) clearTimeout(debounceSpeechTimerRef.current);
+        debounceSpeechTimerRef.current = setTimeout(() => {
+          if (!isCallTerminatedRef.current && !isProcessingRef.current && !isSpeakingRef.current) {
+            const queryToSend = finalTranscriptRef.current.trim();
+            if (queryToSend.length >= 2) {
+              finalTranscriptRef.current = '';
+              try { recognition.stop(); } catch (e) {}
+              handleVoiceQuery(queryToSend);
+            }
+          }
+        }, 450);
       }
     };
 
     recognition.onerror = (event) => {
-      console.warn('Speech recognition error:', event.error);
+      if (debounceSpeechTimerRef.current) clearTimeout(debounceSpeechTimerRef.current);
+      if (isCallTerminatedRef.current) return;
+      setIsListening(false);
+      isListeningRef.current = false;
       if (event.error !== 'aborted') {
-        setIsListening(false);
+        if (mountedRef.current && !isMutedRef.current && !isSpeakingRef.current && !isCallTerminatedRef.current) {
+          setTimeout(() => {
+            if (mountedRef.current && !isMutedRef.current && !isSpeakingRef.current && !isCallTerminatedRef.current) {
+              startListening();
+            }
+          }, 250);
+        }
       }
     };
 
     recognition.onend = () => {
+      if (debounceSpeechTimerRef.current) clearTimeout(debounceSpeechTimerRef.current);
+      if (isCallTerminatedRef.current) {
+        setIsListening(false);
+        isListeningRef.current = false;
+        return;
+      }
       setIsListening(false);
-      // Use ref to get the final transcript (NOT stale state)
-      const finalText = finalTranscriptRef.current.trim();
-      if (finalText && finalText.length > 1) {
-        handleVoiceQuery(finalText);
+      isListeningRef.current = false;
+      const spokenText = finalTranscriptRef.current.trim();
+      finalTranscriptRef.current = '';
+
+      if (spokenText && spokenText.length >= 2 && !isMutedRef.current && !isSpeakingRef.current && !isProcessingRef.current) {
+        handleVoiceQuery(spokenText);
+      } else {
+        // Keep listening if call is active
+        if (mountedRef.current && !isMutedRef.current && !isSpeakingRef.current && !isCallTerminatedRef.current) {
+          setTimeout(() => {
+            if (mountedRef.current && !isMutedRef.current && !isSpeakingRef.current && !isCallTerminatedRef.current) {
+              startListening();
+            }
+          }, 150);
+        }
       }
     };
 
     recognitionRef.current = recognition;
 
     return () => {
-      try { recognition.stop(); } catch (e) { /* ignore */ }
-      synthRef.current?.cancel();
+      try {
+        recognition.onstart = null;
+        recognition.onresult = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+        recognition.stop();
+      } catch (e) {}
+      try {
+        synthRef.current?.cancel();
+      } catch (e) {}
     };
-  }, [handleVoiceQuery]);
+  }, [isOpen, handleVoiceQuery, startListening]);
 
-  // Welcome greeting when opened
+  // Watchdog Timer: Ensures listening is active when call is idle
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const watchdogInterval = setInterval(() => {
+      if (
+        isOpen &&
+        !isCallTerminatedRef.current &&
+        mountedRef.current &&
+        !isMutedRef.current &&
+        !isSpeakingRef.current &&
+        !isProcessingRef.current &&
+        !isListeningRef.current
+      ) {
+        startListening();
+      }
+    }, 1200);
+
+    return () => clearInterval(watchdogInterval);
+  }, [isOpen, startListening]);
+
+  // Initial call connection & greeting
   useEffect(() => {
     if (isOpen) {
-      setHistory([]);
-      setTranscript('');
+      isCallTerminatedRef.current = false;
+      historyRef.current = [];
       finalTranscriptRef.current = '';
       isProcessingRef.current = false;
+      setIsMuted(false);
+      setIsSpeakerMuted(false);
 
-      const welcomeText = "Namaste! Main Gokul Global University ke Engineering Department ka Student Counselor hu. Aap kaise hain? Aaj main aapki kya madad kar sakta hu?";
-      setAiResponseText(welcomeText);
-      setTimeout(() => {
-        if (mountedRef.current) speakResponse(welcomeText, 'hi-IN');
-      }, 600);
+      playConnectChime();
+
+      const timer = setTimeout(() => {
+        if (!mountedRef.current || isCallTerminatedRef.current) return;
+        setIsCallConnected(true);
+
+        const welcomeSpeech = getWelcomeGreeting('hi');
+        speakResponse(welcomeSpeech, 'hi-IN');
+      }, 400);
+
+      return () => clearTimeout(timer);
     } else {
-      // Cleanup when closed
-      synthRef.current?.cancel();
-      try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+      isCallTerminatedRef.current = true;
+      try {
+        synthRef.current?.cancel();
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+      } catch (e) {}
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onstart = null;
+          recognitionRef.current.onresult = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.onend = null;
+          recognitionRef.current.abort();
+        } catch (e) {}
+      }
       setIsListening(false);
+      isListeningRef.current = false;
       setIsSpeaking(false);
-      setIsThinking(false);
+      isSpeakingRef.current = false;
+      setIsCallConnected(false);
     }
-  }, [isOpen, speakResponse]);
+  }, [isOpen, speakResponse, playConnectChime]);
 
-  const startListening = useCallback(() => {
-    if (isSpeaking) {
-      synthRef.current?.cancel();
-      setIsSpeaking(false);
-    }
-    setTranscript('');
-    finalTranscriptRef.current = '';
+  // Instant Hang up & close - 100% silence guaranteed
+  const handleEndCall = useCallback(() => {
+    isCallTerminatedRef.current = true;
 
+    // Immediately cancel and clear browser speech synthesis queue
+    try {
+      if (synthRef.current) {
+        synthRef.current.cancel();
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    } catch (e) {}
+
+    // Detach all speech recognition event listeners
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
-      } catch (e) { /* ignore */ }
-
-      // Small delay to ensure clean restart
-      setTimeout(() => {
-        try {
-          recognitionRef.current.start();
-        } catch (err) {
-          console.warn('Recognition start error:', err.message);
-        }
-      }, 150);
+        recognitionRef.current.onstart = null;
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.abort();
+      } catch (e) {}
     }
-  }, [isSpeaking]);
 
-  const stopListening = useCallback(() => {
-    try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+    if (debounceSpeechTimerRef.current) clearTimeout(debounceSpeechTimerRef.current);
+    finalTranscriptRef.current = '';
+    isProcessingRef.current = false;
+    isSpeakingRef.current = false;
+    isListeningRef.current = false;
     setIsListening(false);
-  }, []);
+    setIsSpeaking(false);
+    setIsCallConnected(false);
+
+    onClose();
+  }, [onClose]);
+
+  // Toggle Mute
+  const handleToggleMute = () => {
+    if (isMuted) {
+      setIsMuted(false);
+      if (!isSpeaking) startListening();
+    } else {
+      setIsMuted(true);
+      stopListening();
+    }
+  };
+
+  // Toggle Speaker
+  const handleToggleSpeaker = () => {
+    if (isSpeakerMuted) {
+      setIsSpeakerMuted(false);
+    } else {
+      try {
+        synthRef.current?.cancel();
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+      } catch (e) {}
+      setIsSpeaking(false);
+      isSpeakingRef.current = false;
+      setIsSpeakerMuted(true);
+    }
+  };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
-      <div className="bg-[#800000] w-full max-w-lg rounded-2xl shadow-2xl border border-[#a00000] flex flex-col items-center p-6 text-white relative">
-        
-        {/* Close Button */}
-        <button
-          onClick={() => {
-            synthRef.current?.cancel();
-            try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
-            setIsListening(false);
-            setIsSpeaking(false);
-            onClose();
-          }}
-          className="absolute top-4 right-4 p-2 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 transition"
-        >
-          <X className="w-5 h-5" />
-        </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/85 backdrop-blur-xl animate-fadeIn">
+      {/* Call Screen Window */}
+      <div 
+        className="relative w-full h-full sm:h-auto sm:max-w-sm sm:min-h-[620px] sm:rounded-[36px] overflow-hidden flex flex-col justify-between shadow-2xl border border-white/10"
+        style={{
+          background: 'radial-gradient(circle at 50% 15%, #2a0808 0%, #120404 45%, #08080c 100%)',
+        }}
+      >
+        {/* Background ambient decorative rings */}
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-red-900/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-64 h-64 bg-amber-600/10 rounded-full blur-3xl pointer-events-none" />
 
-        {/* Header Tag */}
-        <div className="flex items-center gap-2 mb-4">
-          <span className="bg-[#f5b041] text-[#800000] text-xs font-extrabold px-3 py-1 rounded flex items-center gap-1.5 uppercase tracking-wider shadow-sm">
-            VOICE STUDENT COUNSELOR
-          </span>
+        {/* Top Bar: Call Info & Security */}
+        <div className="relative z-10 px-6 pt-6 pb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-1 rounded-full backdrop-blur-md">
+            <Shield className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-[11px] font-medium text-slate-300 tracking-wide">HD Voice Call</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-1 rounded-full">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-[11px] font-mono text-emerald-300 font-semibold tracking-wider">
+              {formatCallDuration(callSeconds)}
+            </span>
+          </div>
         </div>
 
-        {/* Animated Human Counselor Avatar */}
-        <div className="relative my-4 flex flex-col items-center">
+        {/* Center: Caller Identity & Status */}
+        <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-6">
           
-          {/* Avatar Outer Ring */}
-          <div className={`w-40 h-40 rounded-full flex items-center justify-center transition-all duration-300 relative ${
-            isSpeaking ? 'bg-[#f5b041] border-4 border-white' :
-            isListening ? 'bg-white border-4 border-[#f5b041]' :
-            isThinking ? 'bg-slate-700 border-4 border-[#f5b041]' :
-            'bg-[#600000] border-2 border-white/20'
-          }`}>
+          {/* Caller Avatar with Animated Pulsing Rings */}
+          <div className="relative mb-6 flex items-center justify-center">
+            {(isSpeaking || isListening) && (
+              <>
+                <div 
+                  className={`absolute w-44 h-44 rounded-full border ${
+                    isSpeaking ? 'border-amber-500/25' : 'border-emerald-500/25'
+                  } animate-ping`} 
+                  style={{ animationDuration: '2s' }} 
+                />
+                <div 
+                  className={`absolute w-56 h-56 rounded-full border ${
+                    isSpeaking ? 'border-amber-500/10' : 'border-emerald-500/10'
+                  } animate-ping`} 
+                  style={{ animationDuration: '2.8s' }} 
+                />
+              </>
+            )}
 
-            {/* Inner Face Sphere */}
-            <div className="w-32 h-32 rounded-full bg-[#800000] flex flex-col items-center justify-center border-2 border-white/30 relative overflow-hidden shadow-inner">
-              
-              {/* Eyes with Natural Blinking */}
-              <div className="flex items-center gap-5 mb-3">
-                <div className={`w-3 rounded-full bg-[#f5b041] transition-all duration-150 ${
-                  isBlinking ? 'h-0.5' : 'h-3'
-                } ${isSpeaking ? 'animate-bounce' : ''}`} />
-
-                <div className={`w-3 rounded-full bg-[#f5b041] transition-all duration-150 ${
-                  isBlinking ? 'h-0.5' : 'h-3'
-                } ${isSpeaking ? 'animate-bounce' : ''}`} />
+            {/* Glowing Backdrop Circle */}
+            <div 
+              className={`w-32 h-32 sm:w-34 sm:h-34 rounded-full p-1.5 flex items-center justify-center transition-all duration-700 shadow-2xl ${
+                isSpeaking 
+                  ? 'bg-gradient-to-tr from-amber-500/40 via-red-600/40 to-amber-400/40 shadow-[0_0_50px_rgba(245,176,65,0.35)]' 
+                  : isListening 
+                  ? 'bg-gradient-to-tr from-emerald-500/40 via-teal-600/40 to-emerald-400/40 shadow-[0_0_50px_rgba(52,211,153,0.35)]' 
+                  : 'bg-white/10 shadow-black/50'
+              }`}
+            >
+              {/* Inner Avatar Ring */}
+              <div className="w-full h-full rounded-full bg-gradient-to-br from-[#800000] via-[#550000] to-[#2b0000] flex flex-col items-center justify-center border border-amber-400/30 overflow-hidden relative group">
+                <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/10 to-transparent pointer-events-none" />
+                <div className="w-14 h-14 rounded-2xl bg-amber-400/10 border border-amber-400/20 flex items-center justify-center mb-1 shadow-inner">
+                  <span className="text-xl font-black text-amber-400 font-display tracking-wider">GGU</span>
+                </div>
+                <p className="text-[10px] font-semibold text-amber-200/90 tracking-wider uppercase">Counselor</p>
               </div>
+            </div>
+          </div>
 
-              {/* Lips / Mouth */}
-              <div className={`bg-[#f5b041] rounded-full transition-all duration-200 ${
-                isSpeaking ? 'w-8 h-3 animate-pulse' :
-                isListening ? 'w-6 h-2 bg-white' : 'w-5 h-1'
-              }`} />
+          {/* Caller Details */}
+          <div className="text-center space-y-1 mb-6">
+            <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight font-display">
+              GGU Admissions Counselor
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-300 font-medium">
+              Hansaba College of Engineering & Technology
+            </p>
+            <p className="text-[11px] text-amber-400/80 font-medium">
+              Gokul Global University &bull; Sidhpur, Gujarat
+            </p>
+          </div>
 
-              <span className="text-[9px] text-red-100 mt-2.5 font-bold tracking-widest uppercase">
-                GGU COUNSELOR
+          {/* Status Badge: Speaking... or Listening... */}
+          <div className="flex items-center justify-center mb-5">
+            {isSpeaking ? (
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold shadow-lg shadow-amber-500/10 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                <span>Speaking...</span>
+              </div>
+            ) : isListening ? (
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-semibold shadow-lg shadow-emerald-500/10 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>Listening...</span>
+              </div>
+            ) : isMuted ? (
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-semibold">
+                <MicOff className="w-3.5 h-3.5 text-red-400" />
+                <span>Muted</span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs font-semibold animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>Listening...</span>
+              </div>
+            )}
+          </div>
+
+          {/* Dynamic Sound Equalizer Waveform */}
+          <div className="flex items-center justify-center gap-1.5 h-10 w-48 px-2 py-1">
+            {[4, 8, 14, 22, 28, 18, 12, 26, 32, 24, 16, 28, 20, 10, 6].map((baseHeight, i) => {
+              const active = isSpeaking || isListening;
+              const barColor = isSpeaking 
+                ? 'bg-amber-400/90 shadow-[0_0_8px_rgba(245,176,65,0.6)]' 
+                : isListening 
+                ? 'bg-emerald-400/90 shadow-[0_0_8px_rgba(52,211,153,0.6)]' 
+                : 'bg-white/20';
+
+              return (
+                <div
+                  key={i}
+                  className={`w-1 rounded-full transition-all duration-200 ${barColor}`}
+                  style={{
+                    height: active ? `${Math.max(6, baseHeight * (isSpeaking ? 1 : 0.7))}px` : '4px',
+                    animation: active ? `soundWave ${0.5 + (i % 4) * 0.15}s ease-in-out infinite alternate` : 'none',
+                    animationDelay: `${i * 0.05}s`
+                  }}
+                />
+              );
+            })}
+          </div>
+
+        </div>
+
+        {/* Bottom Bar: True Phone Call Controls */}
+        <div className="relative z-10 px-8 pb-9 pt-3 flex flex-col items-center gap-4 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+          <div className="w-full flex items-center justify-around max-w-xs">
+            {/* 1. Mute / Unmute Button */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                onClick={handleToggleMute}
+                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg ${
+                  isMuted 
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
+                    : 'bg-white/10 hover:bg-white/20 text-white border border-white/15'
+                }`}
+                title={isMuted ? 'Unmute microphone' : 'Mute microphone'}
+              >
+                {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+              </button>
+              <span className="text-[11px] font-medium text-slate-400">
+                {isMuted ? 'Unmute' : 'Mute'}
+              </span>
+            </div>
+
+            {/* 2. End Call Button */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                onClick={handleEndCall}
+                className="w-18 h-18 rounded-full bg-gradient-to-tr from-red-600 to-rose-500 hover:from-red-500 hover:to-rose-400 text-white flex items-center justify-center shadow-xl shadow-red-600/40 active:scale-95 transition-all duration-200"
+                title="End Call"
+                style={{ width: '4.5rem', height: '4.5rem' }}
+              >
+                <PhoneOff className="w-7 h-7" />
+              </button>
+              <span className="text-[11px] font-semibold text-rose-300">
+                End Call
+              </span>
+            </div>
+
+            {/* 3. Speaker Button */}
+            <div className="flex flex-col items-center gap-1.5">
+              <button
+                onClick={handleToggleSpeaker}
+                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg ${
+                  isSpeakerMuted 
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' 
+                    : 'bg-white/10 hover:bg-white/20 text-white border border-white/15'
+                }`}
+                title={isSpeakerMuted ? 'Unmute speaker' : 'Mute speaker'}
+              >
+                {isSpeakerMuted ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
+              </button>
+              <span className="text-[11px] font-medium text-slate-400">
+                {isSpeakerMuted ? 'Muted' : 'Speaker'}
               </span>
             </div>
           </div>
 
-          {/* Status Badge below Avatar */}
-          <div className="mt-4 flex items-center gap-2">
-            <span className={`w-2.5 h-2.5 rounded-full ${
-              isSpeaking ? 'bg-[#f5b041] animate-ping' :
-              isListening ? 'bg-white animate-ping' :
-              isThinking ? 'bg-slate-300 animate-pulse' : 'bg-slate-400'
-            }`} />
-            <span className="text-xs font-bold text-slate-100 uppercase tracking-wide">
-              {isSpeaking ? 'Counselor Bol Raha Hai...' :
-               isListening ? 'Aapki Awaaz Sun Raha Hu...' :
-               isThinking ? 'Jawab Soch Raha Hu...' : 'Ready - Mic Dabao'}
-            </span>
-          </div>
-
-        </div>
-
-        {/* Dialogue Box - Shows spoken text + View Details button */}
-        <div className="w-full bg-[#600000] border border-[#a00000] rounded-xl p-4 my-2 min-h-[85px] max-h-[180px] overflow-y-auto">
-          {transcript && (
-            <p className="text-xs text-[#f5b041] font-semibold mb-2 flex items-center gap-1">
-              <User className="w-3.5 h-3.5 shrink-0" /> You: "{transcript}"
-            </p>
-          )}
-
-          {aiResponseText && (
-            <div className="text-xs sm:text-sm text-slate-100 font-medium leading-relaxed flex items-start gap-1.5">
-              <Bot className="w-4 h-4 text-[#f5b041] shrink-0 mt-0.5" />
-              <span className="text-left">{aiResponseText}</span>
-            </div>
-          )}
-
-          {/* View Details Button - shows when detail popup has content */}
-          {detailContent && (
-            <button
-              onClick={() => setShowDetailPopup(true)}
-              className="mt-3 w-full flex items-center justify-center gap-2 bg-[#f5b041] text-[#800000] font-extrabold text-xs py-2.5 rounded-lg hover:bg-[#f7c157] transition shadow-md"
-            >
-              <FileText className="w-4 h-4" />
-              Details Dekho (Screen pe)
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          {!transcript && !aiResponseText && (
-            <p className="text-xs text-red-100 italic text-center">
-              "Mic button dabao aur baat karo counselor se!"
-            </p>
-          )}
-        </div>
-
-        {/* Language Detected Badge */}
-        <div className="flex items-center gap-2 my-1">
-          <span className="text-[10px] font-bold text-red-200 tracking-wide uppercase">
-            Language: {detectedLang === 'hi-IN' ? 'Hindi / Hinglish' : detectedLang === 'gu-IN' ? 'Gujarati' : 'English'}
-          </span>
-        </div>
-
-        {/* Controls Bar */}
-        <div className="w-full pt-4 flex items-center justify-between gap-3 border-t border-white/10 mt-2">
-          {/* Toggle Continuous Mode */}
-          <button
-            onClick={() => setAutoMode(!autoMode)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-bold transition border ${
-              autoMode 
-                ? 'bg-[#f5b041] text-[#800000] border-[#f5b041]' 
-                : 'bg-white/5 text-slate-300 border-white/10'
-            }`}
-          >
-            <Radio className="w-3.5 h-3.5" />
-            <span>Auto: {autoMode ? 'ON' : 'OFF'}</span>
-          </button>
-
-          {/* Main Microphone Button */}
-          <button
-            onClick={isListening ? stopListening : startListening}
-            disabled={isThinking || isSpeaking}
-            className={`p-4 rounded-full shadow-md transition transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
-              isListening
-                ? 'bg-white text-[#800000] animate-pulse'
-                : 'bg-[#f5b041] text-[#800000]'
-            }`}
-          >
-            {isListening ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-          </button>
-
-          {/* Mute Voice */}
-          <button
-            onClick={() => {
-              synthRef.current?.cancel();
-              setIsSpeaking(false);
-            }}
-            className="p-2.5 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-slate-200 text-[11px] font-bold transition flex items-center gap-1"
-          >
-            <VolumeX className="w-3.5 h-3.5" />
-            <span>Mute</span>
-          </button>
+          <p className="text-[10px] text-slate-500 font-medium tracking-wide">
+            Toll-Free Admissions Helpline &bull; Sidhpur, Gujarat
+          </p>
         </div>
 
       </div>
-
-      {/* ===== DETAIL POPUP MODAL (Syllabus / Fees / Eligibility etc.) ===== */}
-      {showDetailPopup && detailContent && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-white w-full max-w-lg max-h-[80vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
-            
-            {/* Popup Header */}
-            <div className="bg-[#800000] px-5 py-3.5 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4.5 h-4.5 text-[#f5b041]" />
-                <h3 className="text-white font-extrabold text-sm tracking-wide">Detailed Information</h3>
-              </div>
-              <button
-                onClick={() => setShowDetailPopup(false)}
-                className="p-1.5 rounded-lg text-red-100 hover:text-white hover:bg-white/10 transition"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Popup Content - Scrollable */}
-            <div className="flex-1 overflow-y-auto p-5">
-              <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-line font-medium">
-                {detailContent}
-              </div>
-            </div>
-
-            {/* Popup Footer */}
-            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
-              <p className="text-[10px] text-slate-400 font-medium">GGU Engineering Counselor</p>
-              <button
-                onClick={() => setShowDetailPopup(false)}
-                className="text-xs font-bold text-[#800000] bg-red-50 border border-red-100 px-4 py-1.5 rounded-lg hover:bg-red-100 transition"
-              >
-                Band Karo
-              </button>
-            </div>
-
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }
